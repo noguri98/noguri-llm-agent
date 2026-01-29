@@ -29,6 +29,7 @@ export default function Home() {
     },
   ]);
   const [input, setInput] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom on new message
@@ -43,8 +44,8 @@ export default function Home() {
     }
   }, [messages]);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -54,16 +55,73 @@ export default function Home() {
 
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
+    setIsLoading(true);
 
-    // Simulate assistant response
-    setTimeout(() => {
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "I received your message: " + input,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-    }, 1000);
+    try {
+      const response = await fetch("http://localhost:8000/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message: userMessage.content }),
+      });
+
+      if (!response.body) {
+        throw new Error("No response body");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+
+      // Temporary assistant message placeholder
+      const assistantId = (Date.now() + 1).toString();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+        },
+      ]);
+
+      let assistantContent = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6); // Remove "data: " prefix
+            if (data === "[DONE]") {
+              break;
+            }
+
+            // Parse JSON data if needed, or treat as raw text depending on server output
+            // Server code: yield {"data": chunk} -> sse-starlette sends data: chunk\n\n
+            // So data variable has the chunk content directly.
+
+            assistantContent += data;
+
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantId
+                  ? { ...msg, content: assistantContent }
+                  : msg
+              )
+            );
+          }
+        }
+      }
+
+    } catch (error) {
+      console.error("Error communicating with backend:", error);
+      // Optional: Add error message to chat
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -106,6 +164,9 @@ export default function Home() {
                       }`}
                   >
                     {message.content}
+                    {message.role === "assistant" && message.content === "" && isLoading && (
+                      <span className="animate-pulse">...</span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -121,8 +182,9 @@ export default function Home() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               className="flex-1"
+              disabled={isLoading}
             />
-            <Button size="icon" onClick={handleSend} disabled={!input.trim()}>
+            <Button size="icon" onClick={handleSend} disabled={!input.trim() || isLoading}>
               <Send className="w-4 h-4" />
             </Button>
           </div>
